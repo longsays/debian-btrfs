@@ -51,7 +51,7 @@ jobs:
               export APT_LISTCHANGES_FRONTEND=none; \
               apt-get update && \
               apt-get -y -o DPkg::Options::='--force-confdef' -o DPkg::Options::='--force-confold' \
-                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin grub-pc wget htop curl iproute2 net-tools ifupdown isc-dhcp-client python3-requests && \
+                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin grub-pc btrfs-progs btrfs-compsize wget htop curl iproute2 net-tools ifupdown isc-dhcp-client python3-requests && \
               apt-get -y autoremove && apt-get -y clean \
             "
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "ln -sf /usr/share/zoneinfo/Asia/Hong_Kong /etc/localtime && dpkg-reconfigure -f noninteractive tzdata"
@@ -125,7 +125,13 @@ jobs:
             sudo mount -o subvol=@,compress-force=zstd:9,discard=async,noatime "$PART_DEV" "$MOUNT_DIR"
             sudo rsync -aHAX --numeric-ids --sparse --delete "$DEBOOT_DIR"/ "$MOUNT_DIR"/
             sudo truncate -s 0 "$MOUNT_DIR/etc/machine-id" || true
-            echo "datasource_list: [ AliYun, ConfigDrive, None ]" | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/90-network-config.cfg" > /dev/null
+            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/90-network-config.cfg" > /dev/null
+            datasource_list: [ AliYun, ConfigDrive, None ]
+            manage_etc_hosts: true
+            system_info:
+              network:
+                renderers: ['eni']
+            EOF
             sudo chroot "$MOUNT_DIR" /bin/bash -c "cloud-init clean --logs --seed" || true
             NEW_UUID=$(sudo blkid -s UUID -o value "$PART_DEV")
             sudo mkdir -p "$MOUNT_DIR/etc"
@@ -182,17 +188,19 @@ jobs:
             sudo rmdir "$MOUNT_DIR" || true
 
       - run:
-          name: 转换为 qcow2 并根据 qcow2 的 sha1 生成最终文件名
+          name: 转换为 qcow2 并根据 qcow2 的 sha256 生成最终文件名
           command: |
             set -euo pipefail
             RELEASE=${RELEASE:-<< parameters.debian_release >>}
             IMG_FILE="debian-${RELEASE}-btrfs.img"
             QCOW2_TMP="debian-${RELEASE}-btrfs.tmp.qcow2"
             qemu-img convert -p -O qcow2 -c "$IMG_FILE" "$QCOW2_TMP"
-            SHA1=$(sha1sum "$QCOW2_TMP" | awk '{print $1}')
-            QCOW2_FINAL="debian-${RELEASE}-btrfs-${SHA1}.qcow2"
+            SHA256=$(sha256sum "$QCOW2_TMP" | awk '{print $1}' | cut -c1-8)
+            QCOW2_FINAL="debian-${RELEASE}-btrfs-${SHA256}.qcow2"
             mv -f "$QCOW2_TMP" "$QCOW2_FINAL"
-            ls -lh "$QCOW2_FINAL"
+            QCOW2_LATEST="debian-${RELEASE}-btrfs-latest.qcow2"
+            cp -f "$QCOW2_FINAL" "$QCOW2_LATEST"
+            ls -lh "$QCOW2_FINAL" "$QCOW2_LATEST"
 
       - run:
           name: 安装 gh 并上传到 GitHub Release
@@ -208,16 +216,33 @@ jobs:
               sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
               sudo apt update && sudo apt install -y gh
             RELEASE=<< parameters.debian_release >>
+            : "${GH_TOKEN:?GH_TOKEN is required}"
             export GITHUB_TOKEN=$GH_TOKEN
             TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
-            SHA1=$(sha1sum "debian-${RELEASE}-btrfs-"*".qcow2" | awk '{print $1}' | head -n1)
-            FNAME="debian-${RELEASE}-btrfs-${SHA1}.qcow2"
-            ls -lh "$FNAME" || (echo "镜像文件不存在: $FNAME" && exit 1)
+            shopt -s nullglob
+            SHA_FILES=(debian-${RELEASE}-btrfs-*.qcow2)
+            shopt -u nullglob
+            LATEST_FILE="debian-${RELEASE}-btrfs-latest.qcow2"
+            SHA_FOUND=false
+            for f in "${SHA_FILES[@]}"; do
+              if [ -f "$f" ] && [[ "$f" != *"-latest.qcow2" ]]; then
+                SHA_FOUND=true
+                break
+              fi
+            done
+            [ "$SHA_FOUND" = true ] || { echo "找不到任何 sha 命名的 qcow2 文件" >&2; exit 1; }
             if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
               gh release create "$TAG_NAME" --title "Debian Btrfs Cloud Image $TAG_NAME" --notes "自动发布自定义 Debian ${RELEASE} Btrfs 压缩镜像"
             fi
-            gh release upload "$TAG_NAME" "$FNAME" --clobber
-            gh release upload latest "$FNAME" --clobber || echo "latest 不存在，跳过上传"
+            for f in "${SHA_FILES[@]}"; do
+              if [ -f "$f" ] && [[ "$f" != *"-latest.qcow2" ]]; then
+                gh release upload "$TAG_NAME" "$f" --clobber || true
+              fi
+            done
+            if [ -f "$LATEST_FILE" ]; then
+              gh release upload "$TAG_NAME" "$LATEST_FILE" --clobber || true
+            fi
+            gh release edit "$TAG_NAME" --latest
             sudo rm -f /usr/sbin/policy-rc.d || true
 
 workflows:
