@@ -51,12 +51,19 @@ jobs:
               export APT_LISTCHANGES_FRONTEND=none; \
               apt-get update && \
               apt-get -y -o DPkg::Options::='--force-confdef' -o DPkg::Options::='--force-confold' \
-                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin grub-pc btrfs-progs btrfs-compsize haveged unattended-upgrades \
+                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin grub-pc btrfs-progs btrfs-compsize haveged unattended-upgrades dbus \
                 wget htop curl iproute2 net-tools ifupdown isc-dhcp-client python3-requests ca-certificates dialog perl-modules && \
               sed -i '/en_US.UTF-8 UTF-8/s/^# //g' /etc/locale.gen && locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 && \
               apt-get -y autoremove && apt-get -y clean \
             "
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "ln -sf /usr/share/zoneinfo/Asia/Hong_Kong /etc/localtime && dpkg-reconfigure -f noninteractive tzdata"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'APT::Periodic::Update-Package-Lists \"1\";' > /etc/apt/apt.conf.d/20auto-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'APT::Periodic::Unattended-Upgrade \"1\";' >> /etc/apt/apt.conf.d/20auto-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Dependencies.*/Unattended-Upgrade::Remove-Unused-Dependencies \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*/Unattended-Upgrade::Remove-Unused-Kernel-Packages \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'Unattended-Upgrade::Post-Invoke-Purge \"true\";' >> /etc/apt/apt.conf.d/50unattended-upgrades"
+            # sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "rm -rf /usr/share/doc/* /var/cache/apt/* /var/lib/apt/lists/*"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "find /usr/share/locale/ -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} +"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "mkdir -p /etc/cloud && echo 'preserve_hostname: false' > /etc/cloud/cloud.cfg.d/99_custom.cfg"
@@ -297,13 +304,20 @@ jobs:
               export APT_LISTCHANGES_FRONTEND=none; \
               apt-get update && \
               apt-get -y -o DPkg::Options::='--force-confdef' -o DPkg::Options::='--force-confold' \
-                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin btrfs-progs btrfs-compsize haveged unattended-upgrades \
+                install cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools grub-pc-bin btrfs-progs btrfs-compsize haveged unattended-upgrades dbus \
                 wget htop curl iproute2 net-tools ifupdown isc-dhcp-client python3-requests ca-certificates dialog perl-modules \
                 dosfstools grub-efi-amd64 grub-efi-amd64-bin efibootmgr && \
               sed -i '/en_US.UTF-8 UTF-8/s/^# //g' /etc/locale.gen && locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 && \
               apt-get -y autoremove && apt-get -y clean \
             "
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "ln -sf /usr/share/zoneinfo/Asia/Hong_Kong /etc/localtime && dpkg-reconfigure -f noninteractive tzdata"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'APT::Periodic::Update-Package-Lists \"1\";' > /etc/apt/apt.conf.d/20auto-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'APT::Periodic::Unattended-Upgrade \"1\";' >> /etc/apt/apt.conf.d/20auto-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Dependencies.*/Unattended-Upgrade::Remove-Unused-Dependencies \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*/Unattended-Upgrade::Remove-Unused-Kernel-Packages \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'Unattended-Upgrade::Post-Invoke-Purge \"true\";' >> /etc/apt/apt.conf.d/50unattended-upgrades"
+            # sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "rm -rf /usr/share/doc/* /var/cache/apt/* /var/lib/apt/lists/*"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "find /usr/share/locale/ -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} +"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "mkdir -p /etc/cloud && echo 'preserve_hostname: false' > /etc/cloud/cloud.cfg.d/99_custom.cfg"
