@@ -62,12 +62,11 @@ jobs:
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Dependencies.*/Unattended-Upgrade::Remove-Unused-Dependencies \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*/Unattended-Upgrade::Remove-Unused-Kernel-Packages \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'Unattended-Upgrade::Post-Invoke-Purge \"true\";' >> /etc/apt/apt.conf.d/50unattended-upgrades"
-            # sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config"
-            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "passwd -d root && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "rm -rf /usr/share/doc/* /var/cache/apt/* /var/lib/apt/lists/*"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "find /usr/share/locale/ -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} +"
-            sudo chroot "$DEBOOT_DIR" /bin/bash -c "mkdir -p /etc/cloud && echo 'preserve_hostname: false' > /etc/cloud/cloud.cfg.d/99_custom.cfg"
-            sudo chroot "$DEBOOT_DIR" cat /etc/passwd
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "cat /etc/passwd && cat /etc/shadow"
             sudo chroot "$DEBOOT_DIR" rm -f /etc/ssh/ssh_host_*
             sudo rm -f "$DEBOOT_DIR/var/lib/dbus/machine-id"
             for fs in dev sys proc; do sudo umount "$DEBOOT_DIR/$fs" || true; done
@@ -138,10 +137,14 @@ jobs:
             sudo mount -o subvol=@,compress-force=zstd:9,discard=async,noatime "$PART_DEV" "$MOUNT_DIR"
             sudo rsync -aHAX --numeric-ids --sparse --delete "$DEBOOT_DIR"/ "$MOUNT_DIR"/
             sudo truncate -s 0 "$MOUNT_DIR/etc/machine-id" || true
-            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/90-network-config.cfg" > /dev/null
+            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/99-custom.cfg" > /dev/null
             datasource_list: [ AliYun, ConfigDrive, None ]
             manage_etc_hosts: true
+            disable_root: false
+            preserve_hostname: false
             system_info:
+              default_user:
+                name: root
               network:
                 renderers: ['eni']
             EOF
@@ -316,12 +319,11 @@ jobs:
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Dependencies.*/Unattended-Upgrade::Remove-Unused-Dependencies \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/.*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*/Unattended-Upgrade::Remove-Unused-Kernel-Packages \"true\";/' /etc/apt/apt.conf.d/50unattended-upgrades"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "echo 'Unattended-Upgrade::Post-Invoke-Purge \"true\";' >> /etc/apt/apt.conf.d/50unattended-upgrades"
-            # sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config"
-            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "passwd -d root && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "rm -rf /usr/share/doc/* /var/cache/apt/* /var/lib/apt/lists/*"
             sudo chroot "$DEBOOT_DIR" /bin/bash -c "find /usr/share/locale/ -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} +"
-            sudo chroot "$DEBOOT_DIR" /bin/bash -c "mkdir -p /etc/cloud && echo 'preserve_hostname: false' > /etc/cloud/cloud.cfg.d/99_custom.cfg"
-            sudo chroot "$DEBOOT_DIR" cat /etc/passwd
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "cat /etc/passwd && cat /etc/shadow"
             sudo chroot "$DEBOOT_DIR" rm -f /etc/ssh/ssh_host_*
             sudo rm -f "$DEBOOT_DIR/var/lib/dbus/machine-id"
             for fs in dev sys proc; do sudo umount "$DEBOOT_DIR/$fs" || true; done
@@ -417,10 +419,14 @@ jobs:
             sudo mount "${PART2_DEV}" "$MOUNT_DIR/boot/efi"
 
             sudo truncate -s 0 "$MOUNT_DIR/etc/machine-id" || true
-            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/90-network-config.cfg" > /dev/null
+            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/99-custom.cfg" > /dev/null
             datasource_list: [ AliYun, ConfigDrive, None ]
             manage_etc_hosts: true
+            disable_root: false
+            preserve_hostname: false
             system_info:
+              default_user:
+                name: root
               network:
                 renderers: ['eni']
             EOF
