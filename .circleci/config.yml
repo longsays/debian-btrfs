@@ -549,6 +549,125 @@ jobs:
             gh release edit "$TAG_NAME" --latest
             sudo rm -f /usr/sbin/policy-rc.d || true
 
+  upload-to-aliyun:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
+    steps:
+      - checkout
+
+      - run:
+          name: 安装依赖工具
+          command: |
+            set -euo pipefail
+            sudo apt-get update
+            sudo apt-get install -y curl tar jq ca-certificates
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list
+            sudo apt-get update && sudo apt-get install -y gh
+            curl -sSL https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz -o /tmp/aliyun-cli.tgz
+            tar -xzf /tmp/aliyun-cli.tgz -C /tmp && sudo mv /tmp/aliyun /usr/local/bin/aliyun && sudo chmod +x /usr/local/bin/aliyun
+
+      - run:
+          name: 下载Release文件
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN=${GH_TOKEN}
+            mkdir -p /tmp/artifacts
+            LATEST_TAG=$(gh release view --json tagName -q .tagName)
+            echo "latest tag: $LATEST_TAG"
+            gh release view "$LATEST_TAG" --json assets \
+              | jq -r '.assets[].name | select(endswith(".qcow2") and (endswith("latest.qcow2") | not))' \
+              | while IFS= read -r NAME || [ -n "$NAME" ]; do
+                  echo "download: $NAME"
+                  gh release download "$LATEST_TAG" --pattern "$NAME" --dir /tmp/artifacts > "/tmp/gh_download_${NAME//[^A-Za-z0-9._-]/_}.out" 2> "/tmp/gh_download_${NAME//[^A-Za-z0-9._-]/_}.err" || {
+                    echo "下载失败: $NAME (查看 /tmp/gh_download_*.err)" >&2
+                    cat "/tmp/gh_download_${NAME//[^A-Za-z0-9._-]/_}.err" >&2
+                    exit 1
+                  }
+                done
+            ls -lah /tmp/artifacts || true
+
+      - run:
+          name: 配置阿里云CLI
+          command: |
+            set -euo pipefail
+            REGION="${OSS_REGION:-${ALIYUN_REGION:-}}"
+            sudo aliyun configure set --profile default --region "${REGION}" --access-key-id "${ALIYUN_ACCESS_KEY_ID}" --access-key-secret "${ALIYUN_ACCESS_KEY_SECRET}"
+
+      - run:
+          name: 上传到 OSS
+          command: |
+            set -euo pipefail
+            BUCKET="${OSS_BUCKET}"; REGION="${OSS_REGION}"; PREFIX="${OSS_PATH:-releases}"
+            COUNT=0
+            for f in /tmp/artifacts/*.qcow2; do
+              [ -f "$f" ] || continue
+              BASENAME=$(basename "$f")
+              echo "upload: ${BASENAME} -> oss://${BUCKET}/${PREFIX}/"
+              sudo aliyun oss cp "$f" "oss://${BUCKET}/${PREFIX}/${BASENAME}" --region "${REGION}" --force
+              ((++COUNT))
+            done
+            echo "上传完成: ${COUNT} 个文件"
+
+      - run:
+          name: 异步并行导入镜像并轮询状态，完成后删除OSS文件
+          command: |
+            set -euo pipefail
+            REGION="${OSS_REGION}"; BUCKET="${OSS_BUCKET}"; PREFIX="${OSS_PATH:-releases}"
+            [ "${BASH_VERSINFO:-0}" -lt 4 ] && { echo "Error: Bash 4.0+ required."; exit 1; }
+            declare -A TASK_MAP; declare -A TASK_STATUS; ERROR_COUNT=0
+            echo "=== Phase 1: 启动导入任务 ==="
+            for f in /tmp/artifacts/*.qcow2; do
+              [ -f "$f" ] || continue
+              BASENAME=$(basename "$f")
+              IMAGE_NAME="${BASENAME%.*}-$(date +%Y%m%d-%H%M%S)"
+              OSS_OBJ="${PREFIX}/${BASENAME}"
+              BOOT_MODE="BIOS"; [[ "$BASENAME" =~ bios-uefi ]] && BOOT_MODE="UEFI"
+              echo "触发导入: ${IMAGE_NAME}..."
+              IMPORT_OUT=$(sudo aliyun ecs ImportImage --RegionId "${REGION}" --ImageName "${IMAGE_NAME}" --Architecture "x86_64" --OSType "linux" --Platform "Debian" --BootMode "${BOOT_MODE}" --DiskDeviceMapping.1.OSSBucket "${BUCKET}" --DiskDeviceMapping.1.OSSObject "${OSS_OBJ}" 2>&1) || { echo "API失败: $IMPORT_OUT"; ERROR_COUNT=$((ERROR_COUNT + 1)); continue; }
+              TASK_ID=$(echo "$IMPORT_OUT" | jq -r '.TaskId // empty' 2>/dev/null || true)
+              [ -z "$TASK_ID" ] && TASK_ID=$(echo "$IMPORT_OUT" | grep -oE 't-[A-Za-z0-9]+' | head -n 1)
+              if [ -n "$TASK_ID" ]; then
+                TASK_MAP["$TASK_ID"]="$OSS_OBJ"; TASK_STATUS["$TASK_ID"]="Importing"
+              else
+                echo "TaskId获取失败: $IMPORT_OUT"; ERROR_COUNT=$((ERROR_COUNT + 1))
+              fi
+            done
+            [ ${#TASK_MAP[@]} -gt 0 ] || exit $ERROR_COUNT
+            echo "=== Phase 2: 轮询状态 (30s间隔) ==="
+            MAX_ITER=120; iter=0
+            while [ $iter -lt $MAX_ITER ]; do
+              sleep 30; iter=$((iter + 1)); FINISHED_IN_LOOP=0
+              for TASK_ID in "${!TASK_MAP[@]}"; do
+                if [[ "${TASK_STATUS[$TASK_ID]}" =~ ^(Finished|Failed|Cancelled|Closed)$ ]]; then
+                  FINISHED_IN_LOOP=$((FINISHED_IN_LOOP + 1)); continue
+                fi
+                STATUS_JSON=$(sudo aliyun ecs DescribeTaskAttribute --RegionId "${REGION}" --TaskId "${TASK_ID}" 2>/dev/null || echo "{}")
+                NEW_STATUS=$(echo "$STATUS_JSON" | jq -r '.TaskStatus // empty')
+                [ -z "$NEW_STATUS" ] && NEW_STATUS=$(echo "$STATUS_JSON" | jq -r '..|.TaskStatus? // empty' | head -n 1)
+                TASK_STATUS["$TASK_ID"]="${NEW_STATUS:-Waiting}"
+                echo "Task $TASK_ID: ${TASK_STATUS[$TASK_ID]} [$iter/$MAX_ITER]"
+                case "${TASK_STATUS[$TASK_ID]}" in
+                  "Finished")
+                    echo "Task $TASK_ID 成功，清理 OSS..."
+                    sudo aliyun oss rm "oss://${BUCKET}/${TASK_MAP[$TASK_ID]}" --region "${REGION}" --force || true
+                    TASK_STATUS["$TASK_ID"]="Finished"; FINISHED_IN_LOOP=$((FINISHED_IN_LOOP + 1))
+                    ;;
+                  "Failed"|"Cancelled"|"Closed")
+                    echo "Task $TASK_ID 异常终止: ${TASK_STATUS[$TASK_ID]}"
+                    ERROR_COUNT=$((ERROR_COUNT + 1)); TASK_STATUS["$TASK_ID"]="Failed"; FINISHED_IN_LOOP=$((FINISHED_IN_LOOP + 1))
+                    ;;
+                esac
+              done
+              [ $FINISHED_IN_LOOP -eq ${#TASK_MAP[@]} ] && { echo "所有任务已到达终态。"; break; }
+            done
+            [ $iter -ge $MAX_ITER ] && { echo "轮询超时，部分任务未完成。"; exit 1; }
+            [ $ERROR_COUNT -gt 0 ] && { echo "同步过程中存在 $ERROR_COUNT 个失败任务。"; exit 1; }
+            echo "所有镜像导入任务已成功完成！"
+
+
 workflows:
   debian-btrfs_build_and_release:
     jobs:
@@ -562,4 +681,11 @@ workflows:
       - debian-btrfs-bios-uefi-build:
           debian_release: << pipeline.parameters.debian_release >>
           filters: *tag_filters
+      - upload-to-aliyun:
+          filters:
+            tags:
+              only:
+                - /^upload-aliyun-.*$/
+            branches:
+              ignore: /.*/
 
