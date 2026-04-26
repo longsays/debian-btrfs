@@ -210,13 +210,14 @@ jobs:
             RELEASE=${RELEASE:-<< parameters.debian_release >>}
             IMG_FILE="debian-${RELEASE}-btrfs.img"
             QCOW2_TMP="debian-${RELEASE}-btrfs.tmp.qcow2"
-            qemu-img convert -p -O qcow2 -c "$IMG_FILE" "$QCOW2_TMP"
+            qemu-img convert -p -O qcow2 -c -o cluster_size=512k "$IMG_FILE" "$QCOW2_TMP"
             SHA256=$(sha256sum "$QCOW2_TMP" | awk '{print $1}' | cut -c1-8)
             QCOW2_FINAL="debian-${RELEASE}-btrfs-bios-${SHA256}.qcow2"
             mv -f "$QCOW2_TMP" "$QCOW2_FINAL"
             QCOW2_LATEST="debian-${RELEASE}-btrfs-bios-latest.qcow2"
-            cp -f "$QCOW2_FINAL" "$QCOW2_LATEST"
+            ln -f "$QCOW2_FINAL" "$QCOW2_LATEST"
             ls -lh "$QCOW2_FINAL" "$QCOW2_LATEST"
+            qemu-img info "$QCOW2_FINAL"
 
       - run:
           name: 安装 gh 并上传到 GitHub Release
@@ -504,13 +505,14 @@ jobs:
             RELEASE=${RELEASE:-<< parameters.debian_release >>}
             IMG_FILE="debian-${RELEASE}-btrfs.img"
             QCOW2_TMP="debian-${RELEASE}-btrfs.tmp.qcow2"
-            qemu-img convert -p -O qcow2 -c "$IMG_FILE" "$QCOW2_TMP"
+            qemu-img convert -p -O qcow2 -c -o cluster_size=512k "$IMG_FILE" "$QCOW2_TMP"
             SHA256=$(sha256sum "$QCOW2_TMP" | awk '{print $1}' | cut -c1-8)
             QCOW2_FINAL="debian-${RELEASE}-btrfs-bios-uefi-${SHA256}.qcow2"
             mv -f "$QCOW2_TMP" "$QCOW2_FINAL"
             QCOW2_LATEST="debian-${RELEASE}-btrfs-bios-uefi-latest.qcow2"
-            cp -f "$QCOW2_FINAL" "$QCOW2_LATEST"
+            ln -f "$QCOW2_FINAL" "$QCOW2_LATEST"
             ls -lh "$QCOW2_FINAL" "$QCOW2_LATEST"
+            qemu-img info "$QCOW2_FINAL"
 
       - run:
           name: 安装 gh 并上传到 GitHub Release
