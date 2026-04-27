@@ -34,7 +34,8 @@ jobs:
             sudo chmod +x /usr/sbin/policy-rc.d
             export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none
             sudo apt update
-            sudo apt install -y debootstrap btrfs-progs qemu-utils qemu-user-static libguestfs-tools axel wget curl util-linux rsync gdisk grub-pc-bin kpartx
+            sudo apt install -y debootstrap btrfs-progs qemu-utils util-linux curl rsync parted kpartx
+            chmod +x .circleci/scripts/disk-utils.sh
 
       - run:
           name: debootstrap -> chroot 系统配置
@@ -114,15 +115,17 @@ jobs:
           name: 创建分区镜像（条件化：MBR 或 GPT）
           command: |
             set -euo pipefail
-            RELEASE=${RELEASE:-<< parameters.debian_release >>}
-            BOOT_MODE=<< parameters.boot_mode >>
+            source .circleci/scripts/disk-utils.sh
+            
+            init_env "<< parameters.debian_release >>" "<< parameters.boot_mode >>"
             IMG_SIZE=1G
-            IMG_FILE="debian-${RELEASE}-btrfs.img"
+            
+            # 创建磁盘镜像
             sudo rm -f "$IMG_FILE"
             sudo fallocate -l "$IMG_SIZE" "$IMG_FILE"
 
+            # 分区布局
             if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              PART_COUNT=3
               sudo parted --script "$IMG_FILE" \
                 mklabel gpt \
                 mkpart primary 1MiB 2MiB \
@@ -134,100 +137,43 @@ jobs:
                 mkpart primary 35MiB 100% \
                 name 3 root
             else
-              PART_COUNT=1
               echo ",,83" | sudo sfdisk --label dos "$IMG_FILE"
             fi
 
-            LOOP_DEV=$(sudo losetup --show -fP "$IMG_FILE")
-            sleep 1
-
-            # 明确分配分区变量
-            if [ -b "${LOOP_DEV}p1" ]; then
-              PART1_DEV="${LOOP_DEV}p1"
-              [ $PART_COUNT -ge 2 ] && PART2_DEV="${LOOP_DEV}p2" || PART2_DEV=""
-              [ $PART_COUNT -ge 3 ] && PART3_DEV="${LOOP_DEV}p3" || PART3_DEV=""
-            else
-              KOUT=$(sudo kpartx -av "$LOOP_DEV" 2>/dev/null || true)
-              PART1_DEV=$(echo "$KOUT" | awk '/p1/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART2_DEV=$(echo "$KOUT" | awk '/p2/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART3_DEV=$(echo "$KOUT" | awk '/p3/ {print "/dev/mapper/" $3; exit}' || echo "")
-            fi
-
-            # 验证根分区设备
-            if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              ROOT_DEV="$PART3_DEV"
-              [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ] && { echo "root 分区映射失败"; sudo losetup -d "$LOOP_DEV" || true; exit 1; }
-            else
-              ROOT_DEV="$PART1_DEV"
-              [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ] && { echo "root 分区映射失败"; sudo losetup -d "$LOOP_DEV" || true; exit 1; }
-            fi
+            # 挂载循环设备
+            setup_loop_device "$IMG_FILE"
+            resolve_boot_devices || error_cleanup "$LOOP_DEV"
 
             # 格式化分区
-            if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              [ -n "$PART2_DEV" ] && [ -b "$PART2_DEV" ] && sudo mkfs.vfat -F32 -n EFI "$PART2_DEV"
-            fi
-            sudo mkfs.btrfs -f -M -n 4k -L "debian_${RELEASE}_btrfs" "$ROOT_DEV"
+            has_valid_efi_dev && sudo mkfs.vfat -F32 -n EFI "$EFI_DEV"
+            sudo mkfs.btrfs $BTRFS_MKFS_OPTS -L "debian_${RELEASE}_btrfs" "$ROOT_DEV"
 
             # 创建 btrfs 子卷
-            MOUNT_DIR=/mnt/debian-root
             sudo mkdir -p "$MOUNT_DIR"
             sudo mount -o loop,compress=zstd:9,noatime "$ROOT_DEV" "$MOUNT_DIR"
             sudo btrfs subvolume create "$MOUNT_DIR/@" || true
-            sudo umount "$MOUNT_DIR"
+            umount_root_filesystem "$MOUNT_DIR"
 
-            command -v kpartx >/dev/null 2>&1 && sudo kpartx -dv "$LOOP_DEV" || true
-            sudo losetup -d "$LOOP_DEV" || true
+            # 清理
+            cleanup_loop_device "$LOOP_DEV"
 
       - run:
           name: 复制系统文件和配置
           command: |
             set -euo pipefail
-            RELEASE=${RELEASE:-<< parameters.debian_release >>}
-            BOOT_MODE=<< parameters.boot_mode >>
+            source .circleci/scripts/disk-utils.sh
+            
             DEBOOT_DIR=/tmp/debootstrap-root
-            IMG_FILE="debian-${RELEASE}-btrfs.img"
-            MOUNT_DIR=/mnt/debian-root
-            ESP_MOUNT=/mnt/debian-esp
-            sudo mkdir -p "$MOUNT_DIR" "$ESP_MOUNT"
+            init_and_setup_loop "<< parameters.debian_release >>" "<< parameters.boot_mode >>" || \
+              error_cleanup "$LOOP_DEV"
 
-            LOOP_DEV=$(sudo losetup --show -fP "$IMG_FILE")
-            sleep 1
+            # 挂载根分区
+            mount_root_filesystem "$MOUNT_DIR"
 
-            if [ -b "${LOOP_DEV}p1" ]; then
-              PART1_DEV="${LOOP_DEV}p1"
-              PART2_DEV="${LOOP_DEV}p2"
-              PART3_DEV="${LOOP_DEV}p3"
-            else
-              KOUT=$(sudo kpartx -av "$LOOP_DEV" 2>/dev/null || true)
-              PART1_DEV=$(echo "$KOUT" | awk '/p1/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART2_DEV=$(echo "$KOUT" | awk '/p2/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART3_DEV=$(echo "$KOUT" | awk '/p3/ {print "/dev/mapper/" $3; exit}' || echo "")
-            fi
-
-            if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              ROOT_DEV="$PART3_DEV"
-              EFI_DEV="$PART2_DEV"
-            else
-              ROOT_DEV="$PART1_DEV"
-              EFI_DEV=""
-            fi
-
-            [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ] && { echo "根分区设备不可用"; sudo losetup -d "$LOOP_DEV" || true; exit 1; }
-
-            sudo mount -o subvol=@,compress-force=zstd:9,discard=async,noatime "$ROOT_DEV" "$MOUNT_DIR"
-
-            if [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ]; then
-              sudo mount "$EFI_DEV" "$ESP_MOUNT" || true
-            fi
-
+            # 复制系统文件
             sudo rsync -aHAX --numeric-ids --sparse --delete "$DEBOOT_DIR"/ "$MOUNT_DIR"/
-            sudo mkdir -p "$MOUNT_DIR/boot/efi"
 
-            if [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ]; then
-              sudo umount "$ESP_MOUNT" || true
-              sudo mount "$EFI_DEV" "$MOUNT_DIR/boot/efi"
-            fi
-
+            # 配置云初始化
             sudo truncate -s 0 "$MOUNT_DIR/etc/machine-id" || true
             sudo rm -f "$MOUNT_DIR/var/lib/dbus/machine-id" || true
             cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/99-custom.cfg" > /dev/null
@@ -244,89 +190,61 @@ jobs:
 
             sudo chroot "$MOUNT_DIR" /bin/bash -c "cloud-init clean --logs --seed" || true
 
+            # 配置 fstab
             NEW_UUID=$(sudo blkid -s UUID -o value "$ROOT_DEV")
-            sudo mkdir -p "$MOUNT_DIR/etc"
-            echo "UUID=$NEW_UUID / btrfs subvol=@,compress-force=zstd:9,defaults,discard=async 0 0" | sudo tee "$MOUNT_DIR/etc/fstab" > /dev/null
+            echo "UUID=$NEW_UUID / btrfs $BTRFS_MOUNT_OPTS 0 0" | \
+              sudo tee "$MOUNT_DIR/etc/fstab" > /dev/null
 
-            if [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ]; then
+            if has_valid_efi_dev; then
               ESP_UUID=$(sudo blkid -s UUID -o value "$EFI_DEV" || echo "")
-              [ -n "$ESP_UUID" ] && echo "UUID=$ESP_UUID /boot/efi vfat defaults,umask=0077 0 1" | sudo tee -a "$MOUNT_DIR/etc/fstab" > /dev/null
+              [ -n "$ESP_UUID" ] && echo "UUID=$ESP_UUID /boot/efi vfat defaults,umask=0077 0 1" | \
+                sudo tee -a "$MOUNT_DIR/etc/fstab" > /dev/null
             fi
 
             sudo cat "$MOUNT_DIR/etc/fstab"
+
+            # 清理日志和缓存
             sudo rm -rf "$MOUNT_DIR/var/log/"* "$MOUNT_DIR/var/cache/"* "$MOUNT_DIR/tmp/"* || true
             sudo rm -f "$MOUNT_DIR/usr/sbin/policy-rc.d" || true
 
-            if [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ]; then
-              sudo umount "$MOUNT_DIR/boot/efi" || true
-            fi
-            sudo umount "$MOUNT_DIR"
+            # 卸载文件系统
+            cleanup_all "$LOOP_DEV" "$MOUNT_DIR"
 
       - run:
           name: 安装 GRUB 引导
           command: |
             set -euo pipefail
-            RELEASE=${RELEASE:-<< parameters.debian_release >>}
-            BOOT_MODE=<< parameters.boot_mode >>
-            IMG_FILE="debian-${RELEASE}-btrfs.img"
-            MOUNT_DIR=/mnt/debian-boot-attach
-            sudo mkdir -p "$MOUNT_DIR"
+            source .circleci/scripts/disk-utils.sh
+            
+            init_and_setup_loop "<< parameters.debian_release >>" "<< parameters.boot_mode >>" || \
+              error_cleanup "$LOOP_DEV"
 
-            LOOP_DEV=$(sudo losetup --show -fP "$IMG_FILE")
-            sleep 1
-
-            if [ -b "${LOOP_DEV}p1" ]; then
-              PART1_DEV="${LOOP_DEV}p1"
-              PART2_DEV="${LOOP_DEV}p2"
-              PART3_DEV="${LOOP_DEV}p3"
-            else
-              KOUT=$(sudo kpartx -av "$LOOP_DEV" 2>/dev/null || true)
-              PART1_DEV=$(echo "$KOUT" | awk '/p1/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART2_DEV=$(echo "$KOUT" | awk '/p2/ {print "/dev/mapper/" $3; exit}' || echo "")
-              PART3_DEV=$(echo "$KOUT" | awk '/p3/ {print "/dev/mapper/" $3; exit}' || echo "")
-            fi
-
-            if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              ROOT_DEV="$PART3_DEV"
-              EFI_DEV="$PART2_DEV"
-            else
-              ROOT_DEV="$PART1_DEV"
-              EFI_DEV=""
-            fi
-
-            [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ] && { echo "根分区不可用"; sudo losetup -d "$LOOP_DEV" || true; exit 1; }
-
-            sudo mount -o subvol=@,compress-force=zstd:9,discard=async,noatime "$ROOT_DEV" "$MOUNT_DIR"
-
-            if [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ]; then
-              sudo mount "$EFI_DEV" "$MOUNT_DIR/boot/efi"
-            fi
-
-            for fs in proc sys dev run; do sudo mount --bind "/$fs" "$MOUNT_DIR/$fs"; done
+            # 挂载文件系统
+            mount_root_filesystem "$MOUNT_DIR"
+            mount_efi_filesystem "$MOUNT_DIR"
+            mount_virtual_filesystems "$MOUNT_DIR"
             sudo cp /etc/resolv.conf "$MOUNT_DIR/etc/resolv.conf" || true
             sudo mkdir -p "$MOUNT_DIR/boot"
 
-            # 统一 grub-install 调用
+            # 安装 GRUB
             if sudo chroot "$MOUNT_DIR" /bin/bash -c "command -v grub-install >/dev/null 2>&1"; then
               if [ "$BOOT_MODE" = "bios-uefi" ]; then
-                sudo chroot "$MOUNT_DIR" /bin/bash -c "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --removable --recheck || true; grub-install --target=i386-pc --recheck --boot-directory=/boot /dev/loop0 || true; update-grub || true"
+                sudo chroot "$MOUNT_DIR" /bin/bash -c \
+                  "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --removable --recheck || true; \
+                   grub-install --target=i386-pc --recheck --boot-directory=/boot /dev/loop0 || true; \
+                   update-grub || true"
               else
-                sudo chroot "$MOUNT_DIR" /bin/bash -c "grub-install --target=i386-pc --recheck --boot-directory=/boot /dev/loop0; update-grub || true"
+                sudo chroot "$MOUNT_DIR" /bin/bash -c \
+                  "grub-install --target=i386-pc --recheck --boot-directory=/boot /dev/loop0; \
+                   update-grub || true"
               fi
             else
               echo "grub-install 不可用" >&2
-              for fs in run dev sys proc; do sudo umount "$MOUNT_DIR/$fs" || true; done
-              [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ] && sudo umount "$MOUNT_DIR/boot/efi" || true
-              sudo umount "$MOUNT_DIR" || true
-              sudo losetup -d "$LOOP_DEV" || true
-              exit 1
+              error_cleanup "$LOOP_DEV" "$MOUNT_DIR"
             fi
 
-            for fs in run dev sys proc; do sudo umount "$MOUNT_DIR/$fs" || true; done
-            [ -n "$EFI_DEV" ] && [ -b "$EFI_DEV" ] && sudo umount "$MOUNT_DIR/boot/efi" || true
-            sudo umount "$MOUNT_DIR" || true
-            command -v kpartx >/dev/null 2>&1 && sudo kpartx -dv "$LOOP_DEV" || true
-            sudo losetup -d "$LOOP_DEV" || true
+            # 清理
+            cleanup_all "$LOOP_DEV" "$MOUNT_DIR"
             sudo rmdir "$MOUNT_DIR" || true
 
       - run:
@@ -373,9 +291,9 @@ jobs:
             LATEST_FILE="debian-${RELEASE}-btrfs-${SUFFIX}-latest.qcow2"
 
             [ ${#SHA_FILES[@]} -gt 0 ] || { echo "未找到 qcow2 文件" >&2; exit 1; }
-
+            [ "$BOOT_MODE" = "bios-uefi" ] && sleep $((RANDOM % 5 + 5))
             if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-              gh release create "$TAG_NAME" --title "Debian Btrfs Cloud Image $TAG_NAME" --notes "自动发布 Debian ${RELEASE} Btrfs 镜像" || true
+              gh release create "$TAG_NAME" --title "Debian Btrfs Cloud Image $TAG_NAME" --notes "自动发布 Debian ${RELEASE} Btrfs 镜像"
             fi
 
             for f in "${SHA_FILES[@]}"; do
