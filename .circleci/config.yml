@@ -255,37 +255,25 @@ jobs:
           command: |
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none
-            type -p curl >/dev/null || sudo apt install -y curl
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-              sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-              sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
-              sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-              sudo apt update && sudo apt install -y gh
-
+            GHR_VERSION=${GHR_VERSION:-v0.18.3}
+            GHR_PARALLEL=${GHR_PARALLEL:-4}
+            type -p ghr >/dev/null || (curl -fsSL "https://github.com/tcnksm/ghr/releases/download/${GHR_VERSION}/ghr_${GHR_VERSION}_linux_amd64.tar.gz" | tar xz -C /tmp && sudo mv /tmp/ghr_*/ghr /usr/local/bin/)
             RELEASE=<< parameters.debian_release >>
             BOOT_MODE=<< parameters.boot_mode >>
             SUFFIX=$([ "$BOOT_MODE" = "bios-uefi" ] && echo "bios-uefi" || echo "bios")
             : "${GH_TOKEN:?GH_TOKEN is required}"
-            export GITHUB_TOKEN=$GH_TOKEN
             TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
-
             shopt -s nullglob
             SHA_FILES=(debian-${RELEASE}-btrfs-${SUFFIX}-*.qcow2)
             shopt -u nullglob
             LATEST_FILE="debian-${RELEASE}-btrfs-${SUFFIX}-latest.qcow2"
-
             [ ${#SHA_FILES[@]} -gt 0 ] || { echo "未找到 qcow2 文件" >&2; exit 1; }
             [ "$BOOT_MODE" = "bios-uefi" ] && sleep $((RANDOM % 5 + 5))
-            if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-              gh release create "$TAG_NAME" --title "Debian Btrfs Cloud Image $TAG_NAME" --notes "自动发布 Debian ${RELEASE} Btrfs 镜像"
-            fi
-
-            for f in "${SHA_FILES[@]}"; do
-              [ -f "$f" ] && gh release upload "$TAG_NAME" "$f" --clobber || true
-            done
-            [ -f "$LATEST_FILE" ] && gh release upload "$TAG_NAME" "$LATEST_FILE" --clobber || true
-            gh release edit "$TAG_NAME" --latest
+            UPLOAD_DIR=$(mktemp -d)
+            for f in "${SHA_FILES[@]}"; do [ -f "$f" ] && mv "$f" "$UPLOAD_DIR/"; done
+            [ -f "$LATEST_FILE" ] && mv "$LATEST_FILE" "$UPLOAD_DIR/"
+            ghr -t "$GH_TOKEN" -u "${CIRCLE_PROJECT_USERNAME}" -r "${CIRCLE_PROJECT_REPONAME}" -n "Debian Btrfs Cloud Image $TAG_NAME" -b "自动发布 Debian ${RELEASE} Btrfs 镜像" -replace -parallel "$GHR_PARALLEL" "$TAG_NAME" "$UPLOAD_DIR"
+            rm -rf "$UPLOAD_DIR"
             sudo rm -f /usr/sbin/policy-rc.d || true
 
   upload-to-aliyun:
