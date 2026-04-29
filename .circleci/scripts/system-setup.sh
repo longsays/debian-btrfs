@@ -7,9 +7,9 @@ export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none
 
 apt-get update
 apt-get -y -o DPkg::Options::='--force-confdef' -o DPkg::Options::='--force-confold' install \
-  cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools \
-  btrfs-progs btrfs-compsize unattended-upgrades dbus \
-  wget htop curl iproute2 net-tools ifupdown isc-dhcp-client python3-requests ca-certificates dialog perl-modules \
+  cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools dosfstools \
+  btrfs-progs unattended-upgrades \
+  wget iproute2 ifupdown isc-dhcp-client python3-requests ca-certificates \
   ${GRUB_PKGS} ${EXTRA_PKGS}
 
 # 配置 locale

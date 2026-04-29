@@ -34,7 +34,7 @@ jobs:
             sudo chmod +x /usr/sbin/policy-rc.d
             export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none
             sudo apt update
-            sudo apt install -y debootstrap btrfs-progs qemu-utils util-linux curl rsync parted kpartx
+            sudo apt install -y debootstrap btrfs-progs qemu-utils util-linux curl rsync parted kpartx dosfstools
             chmod +x .circleci/scripts/disk-utils.sh
 
       - run:
@@ -58,7 +58,7 @@ jobs:
             sudo chmod +x "$DEBOOT_DIR/usr/sbin/policy-rc.d"
 
             if [ "$BOOT_MODE" = "bios-uefi" ]; then
-              GRUB_PKGS="grub-efi-amd64 grub-efi-amd64-bin grub-pc-bin efibootmgr dosfstools"
+              GRUB_PKGS="grub-efi-amd64 grub-efi-amd64-bin grub-pc-bin efibootmgr"
               EXTRA_PKGS=""
             else
               GRUB_PKGS="grub-pc grub-pc-bin"
@@ -143,26 +143,7 @@ jobs:
 
             # 配置云初始化
             sudo truncate -s 0 "$MOUNT_DIR/etc/machine-id" || true
-            sudo rm -f "$MOUNT_DIR/var/lib/dbus/machine-id" || true
-            cat \<<EOF | sudo tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/99-custom.cfg" > /dev/null
-            #cloud-config
-            datasource_list: [ AliYun, OpenStack, Ec2, Azure, ConfigDrive, NoCloud, None ]
-            manage_etc_hosts: true
-            manage_resolv_conf: false
-            disable_root: false
-            ssh_pwauth: false
-            sshd_config:
-              PermitRootLogin: prohibit-password
-              PasswordAuthentication: false
-            preserve_hostname: false
-            package_update: true
-            package_upgrade: false
-            timezone: Asia/Shanghai
-            system_info:
-              default_user:
-                name: root
-            EOF
-
+            sudo bash .circleci/scripts/apply-configs.sh "$MOUNT_DIR"
             sudo chroot "$MOUNT_DIR" /bin/bash -c "cloud-init clean --logs --seed" || true
 
             # 配置 fstab
