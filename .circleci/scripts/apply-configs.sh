@@ -10,12 +10,11 @@ tee "$MOUNT_DIR/etc/cloud/cloud.cfg.d/99-custom.cfg" > /dev/null <<'EOF'
 manage_etc_hosts: true
 manage_resolv_conf: false
 disable_root: false
-ssh_pwauth: false
+ssh_pwauth: true
 preserve_hostname: false
 package_update: true
 package_upgrade: false
 timezone: Asia/Shanghai
-users: []
 
 packages:
   - btrfs-compsize
@@ -38,8 +37,8 @@ write_files:
     owner: root:root
     permissions: '0600'
     content: |
-      PermitRootLogin prohibit-password
-      PasswordAuthentication no
+      PermitRootLogin yes
+      PasswordAuthentication yes
       PubkeyAuthentication yes
   - path: /etc/resolv.conf
     owner: root:root
