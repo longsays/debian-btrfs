@@ -5,6 +5,11 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none
 
+printf "deb https://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware\n" > /etc/apt/sources.list
+printf "deb https://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware\n" >> /etc/apt/sources.list
+printf "deb https://security.debian.org/debian-security ${RELEASE}-security main contrib non-free non-free-firmware\n" > /etc/apt/sources.list.d/security.list
+printf "deb https://deb.debian.org/debian ${RELEASE}-backports main contrib non-free non-free-firmware\n" > /etc/apt/sources.list.d/backports.list
+
 apt-get update
 apt-get -y -o DPkg::Options::='--force-confdef' -o DPkg::Options::='--force-confold' install \
   cloud-init openssh-server locales tzdata linux-image-cloud-amd64 initramfs-tools dosfstools \

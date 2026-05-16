@@ -48,7 +48,7 @@ jobs:
             SETUP_SCRIPT_PATH="/tmp/system-setup.sh"
             sudo rm -rf "$DEBOOT_DIR"
             sudo mkdir -p "$DEBOOT_DIR"
-            sudo debootstrap --arch=amd64 --variant=minbase "$RELEASE" "$DEBOOT_DIR" https://deb.debian.org/debian
+            sudo debootstrap --arch=amd64 --variant=minbase --include=ca-certificates "$RELEASE" "$DEBOOT_DIR" https://deb.debian.org/debian
             printf "options timeout:1 attempts:1\nnameserver 8.8.8.8\nnameserver 1.1.1.1\nnameserver 119.29.29.29\nnameserver 223.5.5.5\nnameserver 2001:4860:4860::8888\n" | sudo tee "$DEBOOT_DIR/etc/resolv.conf"
             mount_virtual_filesystems "$DEBOOT_DIR"
             sudo tee "$DEBOOT_DIR/usr/sbin/policy-rc.d" > /dev/null \<<'EOF'
@@ -66,7 +66,7 @@ jobs:
             fi
 
             sudo cp .circleci/scripts/system-setup.sh "$DEBOOT_DIR$SETUP_SCRIPT_PATH"
-            sudo chroot "$DEBOOT_DIR" /bin/bash -c "export GRUB_PKGS='$GRUB_PKGS'; export EXTRA_PKGS='$EXTRA_PKGS'; bash $SETUP_SCRIPT_PATH"
+            sudo chroot "$DEBOOT_DIR" /bin/bash -c "export GRUB_PKGS='$GRUB_PKGS'; export EXTRA_PKGS='$EXTRA_PKGS'; export RELEASE='$RELEASE'; bash $SETUP_SCRIPT_PATH"
             sudo rm -f "$DEBOOT_DIR$SETUP_SCRIPT_PATH"
 
             umount_virtual_filesystems "$DEBOOT_DIR"
